@@ -1,0 +1,9 @@
+id,name,phones,region,locale,timezone,do_not_call
+CUS-01,Bellweather Foods,+15550100101,US,en-US,America/New_York,false
+CUS-02,Kestrel Logistics,+15550100102,US,en-US,America/Chicago,false
+CUS-03,Harbour Print Works,+15550100103,US,en-US,America/Los_Angeles,false
+CUS-04,Vellum Interiors,+15550100104,US,en-US,America/New_York,true
+CUS-05,Alder & Finch Ltd,+15550100105,US,en-US,America/Denver,false
+CUS-06,Sable Manufacturing,,US,en-US,America/New_York,false
+CUS-07,Marlow Ceramics,+15550100107,US,en-US,America/New_York,false
+CUS-08,Kona Reef Supply,+15550100108,US,en-US,Pacific/Honolulu,false
