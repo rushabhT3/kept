@@ -17,6 +17,7 @@ import pytest
 from tests.conftest import at
 
 from kept.calls.calle_port import CalleCallPort
+from kept.calls.port import CallPlacementError, CallRequest, PlacedCall
 from kept.calls.simulation import SIMULATED_BASE_URL, CalleSimulator, Scenario
 from kept.clock import FrozenClock
 from kept.config import Organisation, Policy
@@ -289,3 +290,82 @@ def test_a_key_burned_before_the_cycle_was_recorded_still_counts(data_dir: Path)
     )
 
     assert keys_consumed(ledger, "INV-1002", CallCycle.FIRST_CONTACT) == 1
+
+
+class TimingOutPort:
+    """A port whose second call never resolves, the way a dropped poll behaves."""
+
+    def __init__(self, *, fail_on: int) -> None:
+        self._fail_on = fail_on
+        self.dispatched = 0
+
+    def dispatch(self, request: CallRequest) -> str:
+        self.dispatched += 1
+        if self.dispatched == self._fail_on:
+            raise CallPlacementError("CALL-E API request timed out.", code="timeout")
+        return f"call_stub_{self.dispatched:04d}"
+
+    def await_result(self, call_id: str) -> PlacedCall:
+        return PlacedCall(
+            call_id=call_id,
+            status="completed",
+            task_completed=True,
+            confidence=0.9,
+            structured_result={
+                "outcome": "no_answer",
+                "right_party_reached": "no",
+                "promise_made": "no",
+                "promised_amount": "unknown",
+                "promised_date": "unknown",
+                "payment_method": "unknown",
+                "dispute_raised": "no",
+                "dispute_reason": "unknown",
+                "evidence_quote": "Nobody picked up.",
+            },
+            summary=None,
+            phones=("+15550100101",),
+        )
+
+    def close(self) -> None:
+        return None
+
+
+def _run_with(data_dir: Path, port: TimingOutPort, *, budget: int = 3):
+    ledger = Ledger(data_dir / "ledger.jsonl")
+    runtime = Runtime(
+        port=port,
+        ledger=ledger,
+        clock=FrozenClock(RUN_MOMENT),
+        policy=Policy(),
+        organisation=Organisation(name="Northwind Supply Co", callback_number="+15550199000"),
+    )
+    return CollectionRun(runtime).execute(load_book(data_dir, ledger), budget)
+
+
+def test_an_ambiguous_outcome_stops_the_run_where_it_stands(data_dir: Path) -> None:
+    """A timed-out create may still be dialling, so nothing else is started."""
+    port = TimingOutPort(fail_on=2)
+
+    summary = _run_with(data_dir, port)
+
+    assert summary.aborted == "timeout"
+    assert port.dispatched == 2
+    assert summary.plan.calls_required == 3
+    assert summary.calls_placed == 1
+
+
+def test_an_unambiguous_rejection_lets_the_rest_of_the_run_continue(data_dir: Path) -> None:
+    class RejectingPort(TimingOutPort):
+        def dispatch(self, request: CallRequest) -> str:
+            self.dispatched += 1
+            if self.dispatched == self._fail_on:
+                raise CallPlacementError("Schema unsupported.", code="result_schema_invalid")
+            return f"call_stub_{self.dispatched:04d}"
+
+    port = RejectingPort(fail_on=2)
+
+    summary = _run_with(data_dir, port)
+
+    assert summary.aborted is None
+    assert port.dispatched == 3
+    assert summary.calls_placed == 2

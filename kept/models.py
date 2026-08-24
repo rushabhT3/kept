@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -43,6 +44,7 @@ class SuppressionReason(str, Enum):
 
     NO_PHONE = "no_phone"
     DO_NOT_CALL = "do_not_call"
+    NOT_AUTHORIZED = "recipient_not_authorized"
     DISPUTE_OPEN = "dispute_open"
     PROMISE_OPEN = "promise_open"
     ALREADY_SETTLED = "already_settled"
@@ -66,8 +68,11 @@ class Customer:
         if not self.id or not self.name:
             raise ValueError("Customer needs an id and a name.")
         for phone in self.phones:
-            if not phone.startswith("+"):
-                raise ValueError(f"Phone {mask_phone(phone)} is not E.164.")
+            if not is_e164(phone):
+                raise ValueError(
+                    f"Phone {mask_phone(phone)} is not E.164: expected + followed by "
+                    "7 to 15 digits and nothing else."
+                )
 
     @property
     def primary_phone(self) -> str | None:
@@ -208,3 +213,37 @@ def mask_phone(phone: str) -> str:
     if len(digits) < 2:
         return "***"
     return f"***{''.join(digits[-2:])}"
+
+
+_E164 = re.compile(r"\+[1-9]\d{6,14}")
+
+
+def is_e164(phone: str) -> bool:
+    """True only for a dialable international number in strict E.164 form.
+
+    A leading + is not validation. Spaces, dashes, extensions and a missing
+    country code all reach the provider as a destination it may still try to
+    route, so the format is pinned here rather than at the API boundary.
+    """
+    return bool(_E164.fullmatch(phone))
+
+
+_PHONE_LIKE = re.compile(r"\+?\d[\d\s().-]{5,18}\d")
+
+
+def redact_phone_like(text: str) -> str:
+    """Mask anything in provider-derived text that could be a phone number.
+
+    Transcript quotes and provider failure messages are free text nobody here
+    wrote, so a number can arrive inside one and be persisted or rendered.
+    Grouped amounts and ISO dates survive untouched because neither reaches
+    nine digits without a comma between them.
+    """
+    return _PHONE_LIKE.sub(_mask_if_phone_like, text)
+
+
+def _mask_if_phone_like(match: re.Match[str]) -> str:
+    token = match.group(0)
+    digits = sum(1 for character in token if character.isdigit())
+    shortest = 7 if token.startswith("+") else 9
+    return mask_phone(token) if shortest <= digits <= 15 else token

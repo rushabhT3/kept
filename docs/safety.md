@@ -23,12 +23,13 @@ No call is placed without a human running a command that says so.
 ## Who is never called
 
 `kept/policy.py` refuses before it selects, and every refusal is written to the ledger with
-a reason. Nine reasons exist and each has a test in `tests/test_policy.py`:
+a reason. Ten reasons exist and each has a test in `tests/test_policy.py`:
 
 | Reason | Meaning |
 | --- | --- |
 | `do_not_call` | Customer flagged. Checked before anything else that could override it |
 | `no_phone` | No callable number on file |
+| `recipient_not_authorized` | The exact number is absent from `authorized_recipients.txt` in a live run |
 | `dispute_open` | The customer contested the invoice on a previous call. Permanently human-owned |
 | `promise_open` | A live commitment already covers the invoice |
 | `already_settled` | The payments feed cleared it |
@@ -39,9 +40,20 @@ a reason. Nine reasons exist and each has a test in `tests/test_policy.py`:
 
 ## E.164 phone numbers
 
-`Customer.__post_init__` rejects any number that does not begin with `+`, at load time, and
-the error message masks the offending number. Region and locale are carried per customer and
-passed to CALL-E as `recipients[0].region` / `.locale`.
+`Customer.__post_init__` rejects at load time anything that is not strict E.164 — `+`
+followed by 7 to 15 digits and nothing else, so spaces, dashes, extensions and a missing
+country code are all refused rather than handed to the provider as a destination it might
+still try to route. `Organisation.callback_number` is held to the same rule because it is
+read out to strangers. Error messages mask the offending number. Region and locale are
+carried per customer and passed to CALL-E as `recipients[0].region` / `.locale`.
+
+## Recipient authorization
+
+A live run reads `authorized_recipients.txt` from its data directory and suppresses every
+customer whose exact number is absent, with the reason `recipient_not_authorized`. A
+missing, empty or malformed file refuses the run outright. `--confirm PLACE-REAL-CALLS`
+authorises the run; this file authorises the destination, and adding a row to
+`customers.csv` is deliberately not enough to make a phone ring.
 
 Sample data uses the reserved fictional `+1555…` range only.
 
@@ -52,7 +64,10 @@ everywhere they leave the input files:
 
 - the terminal call plan and run summary,
 - the `call_placed` ledger entry,
-- error messages raised during load.
+- error messages raised during load,
+- provider-derived free text — evidence quotes, dispute reasons, transcripts, summaries and
+  failure messages are passed through `redact_phone_like` before they are persisted or
+  rendered, so a number spoken on a call never reaches the ledger or the report.
 
 The HTML report contains **no phone number in any form**, enforced by
 `test_report_never_prints_a_phone_number`.
@@ -64,6 +79,10 @@ The HTML report contains **no phone number in any form**, enforced by
 - It is never logged, never written to the ledger, and never included in a report.
 - `.env.example` ships placeholders; `.env` is git-ignored.
 - Missing credentials produce a refusal that points at `--simulate`, not a stack trace.
+- `CALLE_BASE_URL` may only name `https://api.heycall-e.com`. Any other value raises
+  `UntrustedBaseUrlError` before the key is attached to a request, so one environment
+  variable cannot redirect a production credential to a host of someone else's choosing.
+  The simulator uses its own transport and never passes through credential loading.
 
 ## No hidden schedules, no duplicate jobs
 
@@ -73,7 +92,7 @@ exits. There is no state that continues dialling.
 Duplicate calls are prevented by a business-derived idempotency key:
 
 ```
-Idempotency-Key: kept:{invoice_id}:{cycle}:{attempt}
+Idempotency-Key: kept:{invoice_id}:{cycle}:{attempt}:{payload_digest}
 ```
 
 `attempt` is the number of calls the ledger already records for that invoice, so the key is
@@ -81,6 +100,25 @@ stable across retries, restarts and crashes. If the process dies between placing
 writing the ledger, the next run rebuilds the *same* key and CALL-E returns the original
 call rather than dialling again. Pinned by
 `test_replaying_a_run_after_a_lost_ledger_write_does_not_dial_again`.
+
+## Ambiguous outcomes stop the run
+
+A rejected request is a fact; a timeout or a dropped connection is not. Either leaves it
+unknown whether a phone is ringing, so `CallPlacementError.is_ambiguous` is true for both
+and the run stops where it stands rather than starting another call on top of one nobody
+can account for. The ledger records the failure with `"ambiguous": true`, the CLI says so
+on stderr, and `kept recover` reads the outcome of any call that was dialled but never
+collected — without dialling anyone again.
+
+## Results are bound to the call that produced them
+
+A structured result is only allowed to settle the invoice it was raised for. Before
+`kept/capture.py` reads a single field, the answer must agree with the request: the call
+id, the recipient CALL-E says it dialled, the task text, and the `invoice_id`,
+`customer_id` and `cycle` metadata. Any disagreement is `result_not_bound`, and so is a
+result that echoes back nothing checkable at all. A completed call whose `task_completed`
+is not true is `call_not_completed`: the call ending and the job being done are two
+different facts and CALL-E reports them separately.
 
 ## Cancellation and rollback
 
@@ -120,7 +158,7 @@ surfaces as a dispute, which ends collection and hands the account to a person.
 
 CALL-E's structured result is a *claim*, never a record. `kept/capture.py` re-checks the
 right party, an exactly parseable amount, a readable future date inside the horizon, an
-amount the invoice can carry, and the completion-confidence floor. Ten named rejection
+amount the invoice can carry, and the completion-confidence floor. Eleven named rejection
 reasons exist and every one has a test in `tests/test_capture.py`. Amounts are integer minor
 units parsed with `Decimal`; ambiguous grouping is refused rather than guessed.
 

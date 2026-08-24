@@ -18,8 +18,23 @@ from typing import Any
 from kept.calls.port import PlacedCall
 from kept.calls.schema import NOT_STATED
 from kept.config import Policy
-from kept.models import CallOutcome, CallTarget, Dispute, Promise, SpokenAnswer
+from kept.models import CallOutcome, CallTarget, Dispute, Promise, SpokenAnswer, redact_phone_like
 from kept.money import AmountParseError, parse_amount_to_minor
+
+
+@dataclass(frozen=True, slots=True)
+class CallBinding:
+    """What CALL-E was asked to do, so its answer can be proved to be that call's.
+
+    `task` is optional because a recovered call is rebuilt from the ledger, which
+    stores who was dialled but not the words they heard. Everything present is
+    checked; nothing absent is assumed to match.
+    """
+
+    call_id: str
+    phone: str
+    metadata: dict[str, str]
+    task: str | None = None
 
 
 class CaptureVerdict(str, Enum):
@@ -29,6 +44,7 @@ class CaptureVerdict(str, Enum):
 
 
 class RejectionReason(str, Enum):
+    RESULT_NOT_BOUND = "result_not_bound"
     CALL_NOT_COMPLETED = "call_not_completed"
     MISSING_STRUCTURED_RESULT = "missing_structured_result"
     MALFORMED_RESULT = "malformed_result"
@@ -61,7 +77,15 @@ class PromiseCapture:
     def __init__(self, *, policy: Policy) -> None:
         self._policy = policy
 
-    def capture(self, placed: PlacedCall, target: CallTarget, now: datetime) -> CaptureResult:
+    def capture(
+        self,
+        placed: PlacedCall,
+        target: CallTarget,
+        now: datetime,
+        binding: CallBinding,
+    ) -> CaptureResult:
+        if _binding_mismatch(placed, binding) is not None:
+            return _rejected(RejectionReason.RESULT_NOT_BOUND)
         if not placed.is_terminal_success:
             return _rejected(RejectionReason.CALL_NOT_COMPLETED)
         if placed.structured_result is None:
@@ -71,6 +95,8 @@ class PromiseCapture:
         except (KeyError, TypeError, ValueError):
             return _rejected(RejectionReason.MALFORMED_RESULT)
         if _is_dispute(answer):
+            if answer.right_party_reached != "yes":
+                return _rejected(RejectionReason.WRONG_PARTY, answer)
             return _dispute(answer, placed, target, now)
         return self._capture_promise(answer, placed, target, now)
 
@@ -138,9 +164,32 @@ def _read_answer(result: dict[str, Any]) -> SpokenAnswer:
         promised_date=_optional_text(result["promised_date"]),
         payment_method=_optional_text(result["payment_method"]),
         dispute_raised=str(result["dispute_raised"]),
-        dispute_reason=_optional_text(result["dispute_reason"]),
-        evidence_quote=str(result["evidence_quote"]),
+        dispute_reason=_optional_masked(result["dispute_reason"]),
+        evidence_quote=redact_phone_like(str(result["evidence_quote"])),
     )
+
+
+def _binding_mismatch(placed: PlacedCall, binding: CallBinding) -> str | None:
+    """Name the first thing about this result that is not the call we placed.
+
+    A structured result is only allowed to settle the invoice it was raised for.
+    Every field CALL-E echoes back is checked against what was sent, and a
+    result that echoes nothing checkable is refused rather than trusted: the
+    recipient list is the provider's own required field, so its absence means
+    the answer cannot be tied to a destination at all.
+    """
+    if placed.call_id != binding.call_id:
+        return "call_id"
+    if binding.task is not None and placed.task and placed.task != binding.task:
+        return "task"
+    if placed.phones and binding.phone not in placed.phones:
+        return "recipient"
+    for key, expected in binding.metadata.items():
+        if key in placed.metadata and placed.metadata[key] != expected:
+            return f"metadata.{key}"
+    if not placed.phones and not placed.metadata:
+        return "unbindable"
+    return None
 
 
 _ABSENT = {NOT_STATED, "", "none", "null", "n/a"}
@@ -152,6 +201,11 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return None if text.lower() in _ABSENT else text
+
+
+def _optional_masked(value: Any) -> str | None:
+    text = _optional_text(value)
+    return None if text is None else redact_phone_like(text)
 
 
 def _is_dispute(answer: SpokenAnswer) -> bool:

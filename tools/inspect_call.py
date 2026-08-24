@@ -6,7 +6,7 @@ defects are visible — a mangled invoice reference or a fabricated read-back
 looks like a clean structured result from the outside.
 
     python tools/inspect_call.py demo/live
-    python tools/inspect_call.py demo/live --call-id call_TFVpvBj3O2BR1nK_S1T2jg
+    python tools/inspect_call.py demo/live --call-id <call-id-from-the-ledger>
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from calle import CalleClient
 
 from kept.config import load_credentials
 from kept.ledger import Ledger
+from kept.models import redact_phone_like
 from kept.store import EVENT_CALL_DISPATCHED, EVENT_CALL_FAILED, EVENT_CALL_PLACED
 
 _CALL_FIELDS = (
@@ -49,28 +50,33 @@ def latest_call_id(ledger: Ledger) -> str | None:
 
 def print_failures(ledger: Ledger) -> None:
     for failure in ledger.of_type(EVENT_CALL_FAILED):
-        print(f"failed: {failure['code']} - {failure['message']}")
+        print(f"failed: {failure['code']} - {_masked(failure['message'])}")
 
 
 def print_call(call: dict[str, Any]) -> None:
+    """Render the provider's own words, with anything dialable masked first."""
     for field in _CALL_FIELDS:
-        print(f"{field:22}: {call.get(field)}")
-    print("structured_result     :", json.dumps(call.get("structured_result"), indent=2))
+        print(f"{field:22}: {_masked(call.get(field))}")
+    print("structured_result     :", _masked(json.dumps(call.get("structured_result"), indent=2)))
+
+
+def _masked(value: Any) -> str:
+    return redact_phone_like(str(value))
 
 
 def print_transcript(call: dict[str, Any]) -> None:
     for recipient in call.get("recipients") or []:
         print(f"\nrecipient {recipient.get('id')} status={recipient.get('status')}")
-        print("  summary:", recipient.get("summary"))
+        print("  summary:", _masked(recipient.get("summary")))
         for attempt in recipient.get("attempts") or []:
             print(
                 f"  attempt {attempt.get('id')} status={attempt.get('status')} "
-                f"failure={attempt.get('failure_code')} {attempt.get('failure_message')}"
+                f"failure={attempt.get('failure_code')} {_masked(attempt.get('failure_message'))}"
             )
             for turn in attempt.get("transcript_turns") or []:
                 print(
                     f"    [{turn.get('offset_seconds')}s] "
-                    f"{turn.get('speaker')}: {turn.get('text')}"
+                    f"{turn.get('speaker')}: {_masked(turn.get('text'))}"
                 )
 
 

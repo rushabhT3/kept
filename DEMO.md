@@ -168,7 +168,8 @@ https://api.heycall-e.com: not_found (key accepted)
 KEPT_LIVE_CALLS_ENABLED: off (live calls refused)
 ```
 
-Then point `customers.csv` at a number you own and open both gates:
+Then point `customers.csv` at a number you own, put the same number in
+`demo/live/authorized_recipients.txt`, and open both gates:
 
 ```bash
 export KEPT_LIVE_CALLS_ENABLED=true
@@ -176,6 +177,9 @@ kept run --data demo/live --budget 1 --live --confirm PLACE-REAL-CALLS
 ```
 
 `--as-of` is rejected in live mode; a real call is never placed against a pretend date.
+Any number missing from `authorized_recipients.txt` is suppressed as
+`recipient_not_authorized` — the confirmation authorises the run, the file authorises the
+destination.
 
 If the run is interrupted after the customer's phone rings, the call id is already on the
 ledger as `call_dispatched`. Collect the outcome without dialling anyone again:

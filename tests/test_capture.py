@@ -6,7 +6,7 @@ import pytest
 from tests.conftest import at, make_customer, make_invoice
 
 from kept.calls.port import PlacedCall
-from kept.capture import CaptureVerdict, PromiseCapture, RejectionReason
+from kept.capture import CallBinding, CaptureVerdict, PromiseCapture, RejectionReason
 from kept.config import Policy
 from kept.models import CallCycle, CallTarget
 
@@ -35,19 +35,44 @@ def _target(outstanding_minor: int = 125_000) -> CallTarget:
     )
 
 
+_CALL_ID = "call_sim_0001"
+_PHONE = "+15550100101"
+_TASK = "Ask about INV-1001."
+_METADATA = {"invoice_id": "INV-1001", "customer_id": "CUS-01", "cycle": "first_contact"}
+
+
 def _placed(result: dict[str, Any] | None, *, status: str = "completed", confidence: float = 0.9):
     return PlacedCall(
-        call_id="call_sim_0001",
+        call_id=_CALL_ID,
         status=status,
         task_completed=status == "completed",
         confidence=confidence,
         structured_result=result,
         summary=None,
+        task=_TASK,
+        metadata=dict(_METADATA),
+        phones=(_PHONE,),
     )
 
 
+def binding(**overrides: Any) -> CallBinding:
+    fields: dict[str, Any] = {
+        "call_id": _CALL_ID,
+        "phone": _PHONE,
+        "metadata": dict(_METADATA),
+        "task": _TASK,
+    }
+    fields.update(overrides)
+    return CallBinding(**fields)
+
+
+def _capture(policy: Policy, placed: PlacedCall, target: CallTarget | None = None):
+    subject = _target() if target is None else target
+    return PromiseCapture(policy=policy).capture(placed, subject, NOW, binding())
+
+
 def test_a_clear_commitment_becomes_a_promise(policy: Policy) -> None:
-    result = PromiseCapture(policy=policy).capture(_placed(dict(_GOOD_ANSWER)), _target(), NOW)
+    result = _capture(policy, _placed(dict(_GOOD_ANSWER)))
 
     assert result.verdict is CaptureVerdict.PROMISE_RECORDED
     assert result.promise is not None
@@ -58,7 +83,7 @@ def test_a_clear_commitment_becomes_a_promise(policy: Policy) -> None:
 def test_a_stated_dispute_stops_collection_and_records_the_reason(policy: Policy) -> None:
     answer = {**_GOOD_ANSWER, "outcome": "dispute", "dispute_raised": "yes", "dispute_reason": "Billed twice."}
 
-    result = PromiseCapture(policy=policy).capture(_placed(answer), _target(), NOW)
+    result = _capture(policy, _placed(answer), _target())
 
     assert result.verdict is CaptureVerdict.DISPUTE_RECORDED
     assert result.dispute is not None
@@ -86,7 +111,7 @@ def test_a_stated_dispute_stops_collection_and_records_the_reason(policy: Policy
 def test_anything_short_of_a_dated_commitment_is_handed_to_a_human(
     policy: Policy, override: dict[str, Any], expected: RejectionReason
 ) -> None:
-    result = PromiseCapture(policy=policy).capture(_placed({**_GOOD_ANSWER, **override}), _target(), NOW)
+    result = _capture(policy, _placed({**_GOOD_ANSWER, **override}), _target())
 
     assert result.verdict is CaptureVerdict.NO_RECORD
     assert result.rejection is expected
@@ -94,27 +119,25 @@ def test_anything_short_of_a_dated_commitment_is_handed_to_a_human(
 
 
 def test_a_confident_sounding_but_low_confidence_call_records_nothing(policy: Policy) -> None:
-    result = PromiseCapture(policy=policy).capture(
-        _placed(dict(_GOOD_ANSWER), confidence=0.4), _target(), NOW
-    )
+    result = _capture(policy, _placed(dict(_GOOD_ANSWER), confidence=0.4), _target())
 
     assert result.rejection is RejectionReason.LOW_CONFIDENCE
 
 
 def test_a_failed_call_never_produces_a_record(policy: Policy) -> None:
-    result = PromiseCapture(policy=policy).capture(_placed(None, status="failed"), _target(), NOW)
+    result = _capture(policy, _placed(None, status="failed"), _target())
 
     assert result.rejection is RejectionReason.CALL_NOT_COMPLETED
 
 
 def test_a_completed_call_with_no_structured_result_records_nothing(policy: Policy) -> None:
-    result = PromiseCapture(policy=policy).capture(_placed(None), _target(), NOW)
+    result = _capture(policy, _placed(None), _target())
 
     assert result.rejection is RejectionReason.MISSING_STRUCTURED_RESULT
 
 
 def test_a_result_missing_required_fields_is_treated_as_malformed(policy: Policy) -> None:
-    result = PromiseCapture(policy=policy).capture(_placed({"outcome": "promise_to_pay"}), _target(), NOW)
+    result = _capture(policy, _placed({"outcome": "promise_to_pay"}), _target())
 
     assert result.rejection is RejectionReason.MALFORMED_RESULT
 
@@ -122,7 +145,7 @@ def test_a_result_missing_required_fields_is_treated_as_malformed(policy: Policy
 def test_an_over_promise_is_clamped_to_what_the_invoice_can_carry(policy: Policy) -> None:
     answer = {**_GOOD_ANSWER, "promised_amount": "5000.00"}
 
-    result = PromiseCapture(policy=policy).capture(_placed(answer), _target(125_000), NOW)
+    result = _capture(policy, _placed(answer), _target(125_000))
 
     assert result.promise is not None
     assert result.promise.amount_minor == 125_000
@@ -134,7 +157,7 @@ def test_the_not_stated_sentinel_is_read_as_an_absent_value(policy: Policy) -> N
     """CALL-E cannot send null, so `unknown` must mean the same thing locally."""
     answer = {**_GOOD_ANSWER, "payment_method": "unknown"}
 
-    result = PromiseCapture(policy=policy).capture(_placed(answer), _target(), NOW)
+    result = _capture(policy, _placed(answer), _target())
 
     assert result.promise is not None
     assert result.promise.method == "unknown"
@@ -143,7 +166,7 @@ def test_the_not_stated_sentinel_is_read_as_an_absent_value(policy: Policy) -> N
 def test_a_dispute_with_the_sentinel_reason_falls_back_to_the_quote(policy: Policy) -> None:
     answer = {**_GOOD_ANSWER, "dispute_raised": "yes", "dispute_reason": "unknown"}
 
-    result = PromiseCapture(policy=policy).capture(_placed(answer), _target(), NOW)
+    result = _capture(policy, _placed(answer), _target())
 
     assert result.dispute is not None
     assert result.dispute.reason == _GOOD_ANSWER["evidence_quote"]
@@ -152,6 +175,6 @@ def test_a_dispute_with_the_sentinel_reason_falls_back_to_the_quote(policy: Poli
 def test_a_promise_due_today_is_still_a_promise(policy: Policy) -> None:
     answer = {**_GOOD_ANSWER, "promised_date": NOW.date().isoformat()}
 
-    result = PromiseCapture(policy=policy).capture(_placed(answer), _target(), NOW)
+    result = _capture(policy, _placed(answer), _target())
 
     assert result.verdict is CaptureVerdict.PROMISE_RECORDED

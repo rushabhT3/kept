@@ -26,9 +26,12 @@ from kept.store import AccountBook
 
 
 class CallPlanner:
-    def __init__(self, *, policy: Policy) -> None:
+    def __init__(
+        self, *, policy: Policy, authorized_phones: frozenset[str] | None = None
+    ) -> None:
         self._policy = policy
         self._ledger = PromiseLedger(policy=policy)
+        self._authorized_phones = authorized_phones
 
     def plan(self, book: AccountBook, now: datetime, budget: int) -> CallPlan:
         settlement = apply_payments(book.payments, book.invoices)
@@ -74,6 +77,8 @@ class CallPlanner:
             return SuppressionReason.NO_PHONE, "No callable number on file."
         if customer.do_not_call:
             return SuppressionReason.DO_NOT_CALL, "Customer is flagged do-not-call."
+        if not self._is_authorized(customer):
+            return SuppressionReason.NOT_AUTHORIZED, "This exact number is not on the authorized list."
         if invoice.id in book.disputed_invoice_ids():
             return SuppressionReason.DISPUTE_OPEN, "Dispute is open and owned by a human."
         return self._timing_reason(invoice, book, now, statuses, customer)
@@ -97,6 +102,16 @@ class CallPlanner:
         if self._is_quiet_hours(customer, now):
             return SuppressionReason.QUIET_HOURS, f"Local time is outside calling hours in {customer.timezone}."
         return None, ""
+
+    def _is_authorized(self, customer: Customer) -> bool:
+        """Whether a human has signed off on dialling this exact number.
+
+        Absent a list, no live call is possible, so the check is skipped rather
+        than suppressing every invoice in a simulated run.
+        """
+        if self._authorized_phones is None:
+            return True
+        return customer.primary_phone in self._authorized_phones
 
     def _chase_from(self, invoice: Invoice) -> date:
         return invoice.due_date + timedelta(days=self._policy.grace_days_after_due)

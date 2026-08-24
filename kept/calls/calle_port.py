@@ -19,6 +19,7 @@ from calle.errors import (
 )
 
 from kept.calls.port import CallPlacementError, CallRequest, PlacedCall
+from kept.models import redact_phone_like
 
 _PROBE_CALL_ID = "call_kept_credential_probe"
 
@@ -86,13 +87,17 @@ class CalleCallPort:
         try:
             self._client.calls.get(_PROBE_CALL_ID)
         except CalleAuthenticationError as exc:
-            raise CallPlacementError(f"CALL-E rejected the API key: {exc}", code=exc.code) from exc
+            raise CallPlacementError(
+                f"CALL-E rejected the API key: {redact_phone_like(str(exc))}", code=exc.code
+            ) from exc
         except CalleAPIError as exc:
             if exc.code == "not_found":
                 return "API key accepted."
-            raise CallPlacementError(f"CALL-E returned {exc.code}: {exc}", code=exc.code) from exc
+            raise CallPlacementError(
+                f"CALL-E returned {exc.code}: {redact_phone_like(str(exc))}", code=exc.code
+            ) from exc
         except CalleConnectionError as exc:
-            raise CallPlacementError(str(exc), code="connection_error") from exc
+            raise CallPlacementError(redact_phone_like(str(exc)), code="connection_error") from exc
         return "API key accepted."
 
     def close(self) -> None:
@@ -100,10 +105,11 @@ class CalleCallPort:
 
 
 def _placement_error(exc: Exception) -> CallPlacementError:
+    """Provider failure text is persisted to the ledger, so it is masked first."""
     if isinstance(exc, CalleAPIError):
-        return CallPlacementError(str(exc), code=exc.code)
+        return CallPlacementError(redact_phone_like(str(exc)), code=exc.code)
     code = "timeout" if isinstance(exc, CalleTimeoutError) else "connection_error"
-    return CallPlacementError(str(exc) or f"CALL-E call {code}.", code=code)
+    return CallPlacementError(redact_phone_like(str(exc)) or f"CALL-E call {code}.", code=code)
 
 
 def _to_placed_call(call: dict[str, Any]) -> PlacedCall:
@@ -113,9 +119,32 @@ def _to_placed_call(call: dict[str, Any]) -> PlacedCall:
         task_completed=call.get("task_completed"),
         confidence=_confidence(call),
         structured_result=call.get("structured_result"),
-        summary=call.get("summary"),
+        summary=_optional_masked(call.get("summary")),
         failure_code=call.get("failure_code"),
         transcript=_transcript(call),
+        task=str(call.get("task") or ""),
+        metadata=_metadata(call),
+        phones=_phones(call),
+    )
+
+
+def _optional_masked(value: Any) -> str | None:
+    return None if value is None else redact_phone_like(str(value))
+
+
+def _metadata(call: dict[str, Any]) -> dict[str, str]:
+    block = call.get("metadata")
+    if not isinstance(block, dict):
+        return {}
+    return {str(key): str(value) for key, value in block.items()}
+
+
+def _phones(call: dict[str, Any]) -> tuple[str, ...]:
+    """Every number CALL-E says it dialled, so a result can be bound to one."""
+    return tuple(
+        str(phone)
+        for recipient in call.get("recipients") or []
+        for phone in recipient.get("phones") or []
     )
 
 
@@ -132,5 +161,6 @@ def _transcript(call: dict[str, Any]) -> tuple[tuple[str, str], ...]:
     for recipient in call.get("recipients") or []:
         for attempt in recipient.get("attempts") or []:
             for turn in attempt.get("transcript_turns") or []:
-                turns.append((str(turn.get("speaker", "unknown")), str(turn.get("text", ""))))
+                text = redact_phone_like(str(turn.get("text", "")))
+                turns.append((str(turn.get("speaker", "unknown")), text))
     return tuple(turns)

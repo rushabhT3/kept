@@ -46,10 +46,10 @@ Each stage is a separate, testable decision:
 
 | Stage | Module | What it owns |
 | --- | --- | --- |
-| Who may be called | `kept/policy.py` | Nine named suppression reasons; ranking; call budget |
+| Who may be called | `kept/policy.py` | Ten named suppression reasons; ranking; call budget |
 | What is said | `kept/calls/scripts.py` | One wording per escalation cycle, plus hard boundaries |
 | What comes back | `kept/calls/schema.py` | A closed CALL-E `result_schema` with an `unknown` for every field |
-| Whether it counts | `kept/capture.py` | Ten rejection reasons standing between a sentence and a debt |
+| Whether it counts | `kept/capture.py` | Eleven rejection reasons standing between a sentence and a debt |
 | Whether it held | `kept/reconcile.py`, `kept/promises.py` | Payment allocation, then promise status |
 | What it is worth | `kept/report.py` | Coverage, keep rate, calls avoided |
 
@@ -135,10 +135,11 @@ record**. Every condition below is checked locally, in `kept/capture.py`, after 
 
 | Rejection | What triggers it |
 | --- | --- |
-| `call_not_completed` | Status is not `completed` |
+| `result_not_bound` | The result does not echo back the call id, recipient, task or metadata that was sent |
+| `call_not_completed` | Status is not `completed`, or CALL-E reports `task_completed` as anything but true |
 | `missing_structured_result` | Call completed with no structured result |
 | `malformed_result` | A required field is absent or off-vocabulary |
-| `wrong_party` | `right_party_reached` is not `yes` — a colleague taking a message is not a commitment |
+| `wrong_party` | `right_party_reached` is not `yes` — a colleague taking a message is neither a commitment nor a dispute |
 | `no_commitment` | No amount **and** date were stated and read back |
 | `unreadable_amount` | `"a couple of thousand"`, `"1,25,000"` — anything not exactly parseable |
 | `unreadable_date` | `"next Friday"` survived unresolved |
@@ -215,6 +216,10 @@ enforced in code, not documentation.
 *Before dialling:*
 
 - `do_not_call` is honoured before anything else is considered.
+- In live mode, the exact number must appear in `authorized_recipients.txt`. A run
+  confirmation authorises the run; that file authorises the destination. Anyone else is
+  suppressed as `recipient_not_authorized`.
+- Every number is validated as strict E.164 at load time — a leading `+` is not enough.
 - Quiet hours are evaluated in **the customer's own timezone** (`zoneinfo`), not the server's.
 - A customer contacted inside `min_days_between_calls` is not contacted again.
 - An open dispute permanently removes the invoice from calling and routes it to a human.
@@ -234,8 +239,15 @@ enforced in code, not documentation.
 
 *After the call:*
 
+- A result is bound to the call that produced it before it means anything: the call id,
+  the recipient, the task and the `invoice_id` / `customer_id` / `cycle` metadata must all
+  agree with what was sent, and a result that echoes none of them back is refused.
 - Phone numbers are masked to their last two digits everywhere they are persisted or
-  displayed. The HTML report contains no phone number at all, and a test enforces that.
+  displayed, including inside provider-derived text — an evidence quote or a failure
+  message that contains a number is masked before it is written. The HTML report contains
+  no phone number at all, and a test enforces that.
+- An ambiguous outcome stops the run. A timeout or a dropped connection leaves it unknown
+  whether a phone is ringing, so no further call is started; `kept recover` settles it.
 - The ledger is append-only and hash-chained; `kept verify` detects any edited or removed entry.
 - Nothing is written to the operator's accounting system. `kept` reads invoices and payments
   and writes only its own ledger.
@@ -257,42 +269,51 @@ environment variable is enough on its own:
 export CALLE_API_KEY="calle_live_..."      # from dashboard.heycall-e.com/account/api-keys
 export KEPT_LIVE_CALLS_ENABLED=true        # gate 1
 
-kept run --data demo --budget 1 --live --confirm PLACE-REAL-CALLS   # gate 2
+kept run --data demo/live --budget 1 --live --confirm PLACE-REAL-CALLS   # gate 2
 ```
 
 - Without the key: refused, with a pointer to `--simulate`.
 - Without `KEPT_LIVE_CALLS_ENABLED`: refused.
 - Without the exact `--confirm PLACE-REAL-CALLS`: refused.
+- Without `authorized_recipients.txt` in the data directory: refused. Numbers absent from
+  it are suppressed individually, so one signed-off recipient never authorises the rest.
+- `CALLE_BASE_URL` may only name `https://api.heycall-e.com`. The key is never attached to
+  a request bound anywhere else.
 - `--as-of` is rejected outright with `--live`. A real call is never made against a pretend date.
 - `--budget` is the hard ceiling on calls a run may place. `--budget 1` is the recommended
   first live run.
 
-Every request carries `Idempotency-Key: kept:{invoice_id}:{cycle}:{attempt}`, derived from
+Every request carries
+`Idempotency-Key: kept:{invoice_id}:{cycle}:{attempt}:{payload_digest}`, derived from
 durable business identity rather than run time. If the process dies between placing a call
 and writing the ledger, the next run rebuilds the same key and CALL-E returns the original
-call instead of dialling the customer again. There is a test for exactly that.
+call instead of dialling the customer again. There is a test for exactly that. The digest
+covers the task, recipient, region, locale and schema, so a reused key can only ever return
+a call placed with exactly the instructions being asked for now; `run_id` is excluded from
+it because a key that changed every run would stop deduplicating the crash it exists for.
 
 Use numbers you own. The bundled samples use the reserved fictional `+1555…` range.
 
 ---
 
-## What the real calls changed
+## What live verification changed
 
-Simulation proves the pipeline. It cannot prove the conversation. Three real calls to a
-number we own produced six defects that no mock would ever have surfaced, and each one is
-now a rule in `kept/calls/scripts.py` with a test in `tests/test_scripts.py`:
+Simulation proves the pipeline. It cannot prove the conversation. Verification calls to a
+number we own and authorised surfaced six failure modes no mock would have produced. Each
+is now a rule in `kept/calls/scripts.py` with a test in `tests/test_scripts.py`, and each
+is reproduced below as a generalised case rather than a transcript:
 
-| What happened on the call | Fix |
+| Failure mode | Fix |
 | --- | --- |
-| `INV-1001` was read aloud as *"invoice capitalized I"* — TTS narrated the punctuation and the casing | `spoken_reference()` renders it as `I N V one zero zero one`, the way the recipient reads it off their own copy |
-| An `en-IN` call switched into Urdu mid-sentence to say it had not understood | The task text names the language explicitly and forbids switching, even to apologise |
-| *"I'll send a couple of thousand"* was answered with *"Got it."* | A vague amount is named as not-an-amount and the agent may not move on to the date without an exact figure |
-| The call closed having agreed a date and no amount | A date alone is stated to be no commitment |
-| The agent invented *"one thousand dollars on August 24th"* and asked for confirmation of values the customer never said | A read-back may contain only values the customer stated |
-| Asked the date, the agent said it could not access it — with the date in its own prompt | The date is stated up front and the agent is told it knows it |
+| An invoice reference was read aloud with its punctuation and casing narrated, so the recipient could not match it to their copy | `spoken_reference()` renders `INV-1001` as `I N V one zero zero one`, the way it is read off a document |
+| An `en-IN` call switched language mid-sentence to say it had not understood | The task text names the language explicitly and forbids switching, even to apologise |
+| A vague quantity offered in place of a figure was acknowledged as though it were an amount | A vague amount is named as not-an-amount and the agent may not move on to the date without an exact figure |
+| A call closed having agreed a date with no amount attached | A date alone is stated to be no commitment |
+| A read-back contained an amount and a date the customer had never stated, presented for confirmation | A read-back may contain only values the customer stated |
+| Asked what the date was, the agent said it could not access it — with the date in its own prompt | The date is stated up front and the agent is told it knows it |
 
-The first four are confirmed fixed on a later live call. The last two are fixed and tested
-but not yet re-verified on the wire.
+The first four are confirmed fixed on a later verification call. The last two are fixed and
+tested but not yet re-verified on the wire.
 
 Two of our own bugs surfaced the same way:
 
@@ -318,6 +339,7 @@ Two of our own bugs surfaced the same way:
 | `payments/*.csv` | you | Bank feeds: `id,customer_id,amount,value_date,reference`. Drop a new file in; all are read |
 | `organisation.json` | you | Creditor name and E.164 callback number, read out on every call |
 | `policy.json` | you | Grace days, quiet hours, contact frequency, confidence floor, call budget |
+| `authorized_recipients.txt` | you | One E.164 number per line. Required for `--live`; anyone absent is suppressed |
 | `ledger.jsonl` | `kept` | Append-only, hash-chained. Promises, disputes and contact history replay from here |
 
 There is no second copy of state. Promises, disputes and contact history are rebuilt from
@@ -344,7 +366,7 @@ proves the key is good; a `401` proves it is not. Neither spends a call.
 pytest
 ```
 
-120 tests, no network, no credentials. They cover money parsing, allocation invariants
+155 tests, no network, no credentials. They cover money parsing, allocation invariants
 (no payment spent twice), every promise transition, every suppression reason, every capture
 rejection, ledger tamper detection, both live gates, crash recovery mid-poll, the
 `result_schema` pre-flight check, the spoken form of every identifier, and end-to-end runs

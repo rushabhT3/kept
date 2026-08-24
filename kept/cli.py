@@ -19,7 +19,15 @@ from kept.calls.calle_port import CalleCallPort
 from kept.calls.port import CallPlacementError
 from kept.calls.simulation import SIMULATED_BASE_URL, CalleSimulator, Scenario, ScenarioError
 from kept.clock import Clock, FrozenClock, SystemClock
-from kept.config import MissingCredentialsError, Organisation, Policy, load_credentials
+from kept.config import (
+    MissingCredentialsError,
+    Organisation,
+    Policy,
+    UnauthorizedRecipientsError,
+    UntrustedBaseUrlError,
+    load_authorized_recipients,
+    load_credentials,
+)
 from kept.engine import CollectionRun, Runtime
 from kept.ledger import Ledger, LedgerIntegrityError
 from kept.policy import CallPlanner
@@ -36,6 +44,8 @@ _EXPECTED_FAILURES = (
     ScenarioError,
     LedgerIntegrityError,
     MissingCredentialsError,
+    UnauthorizedRecipientsError,
+    UntrustedBaseUrlError,
     ValueError,
     TypeError,
     OSError,
@@ -126,6 +136,7 @@ def _handle_recover(args: argparse.Namespace) -> int:
         print("No dialled calls are missing an outcome.")
         return 0
     print(render_run(summary))
+    _warn_aborted(summary.aborted)
     return 0
 
 
@@ -175,11 +186,17 @@ def _handle_run(args: argparse.Namespace) -> int:
     clock = _clock(args, live=live)
     port, simulator = _build_port(args, live=live, today=clock.now().date())
     runtime = Runtime(
-        port=port, ledger=ledger, clock=clock, policy=policy, organisation=_organisation(args.data)
+        port=port,
+        ledger=ledger,
+        clock=clock,
+        policy=policy,
+        organisation=_organisation(args.data),
+        authorized_phones=load_authorized_recipients(args.data) if live else None,
     )
     summary = CollectionRun(runtime).execute(book, _budget(args, policy))
     print(render_plan(summary.plan))
     print(render_run(summary))
+    _warn_aborted(summary.aborted)
     _warn_unscripted(simulator)
     port.close()
     return 0
@@ -269,6 +286,17 @@ def _build_port(
     simulator = CalleSimulator(scenario=Scenario.from_file(args.scenario), today=today)
     port = CalleCallPort.with_transport(transport=simulator.transport, base_url=SIMULATED_BASE_URL)
     return port, simulator
+
+
+def _warn_aborted(code: str | None) -> None:
+    """An ambiguous outcome stops the run; say so rather than looking finished."""
+    if code is None:
+        return
+    print(
+        f"\nwarning: run stopped after an ambiguous {code}. A call may be live and "
+        "unrecorded; settle it with `kept recover` before running again.",
+        file=sys.stderr,
+    )
 
 
 def _warn_unscripted(simulator: CalleSimulator | None) -> None:

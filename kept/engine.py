@@ -11,14 +11,31 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from kept.calls.port import CallPlacementError, CallPort, CallRequest, PlacedCall, idempotency_key
+from kept.calls.port import (
+    CallPlacementError,
+    CallPort,
+    CallRequest,
+    PlacedCall,
+    idempotency_key,
+    payload_digest,
+)
 from kept.calls.schema import assert_supported, promise_result_schema
 from kept.calls.scripts import ScriptWriter
-from kept.capture import CaptureResult, CaptureVerdict, PromiseCapture
+from kept.capture import CallBinding, CaptureResult, CaptureVerdict, PromiseCapture
 from kept.clock import Clock
 from kept.config import Organisation, Policy
 from kept.ledger import Ledger
-from kept.models import CallCycle, CallPlan, CallTarget, Dispute, Promise, Suppression, mask_phone
+from kept.models import (
+    CallCycle,
+    CallPlan,
+    CallTarget,
+    Dispute,
+    Promise,
+    Suppression,
+    is_e164,
+    mask_phone,
+    redact_phone_like,
+)
 from kept.policy import CallPlanner
 from kept.store import (
     EVENT_CALL_DISPATCHED,
@@ -40,6 +57,8 @@ class Runtime:
     clock: Clock
     policy: Policy
     organisation: Organisation
+    authorized_phones: frozenset[str] | None = None
+    """Numbers a human signed off on for this data set. `None` outside live runs."""
 
 
 @dataclass(slots=True)
@@ -51,6 +70,8 @@ class RunSummary:
     disputes: list[Dispute] = field(default_factory=list)
     rejections: list[tuple[str, str]] = field(default_factory=list)
     failures: list[tuple[str, str]] = field(default_factory=list)
+    aborted: str | None = None
+    """Set when an outcome was ambiguous, which stops the run where it stands."""
 
     @property
     def suppressions(self) -> tuple[Suppression, ...]:
@@ -60,7 +81,9 @@ class RunSummary:
 class CollectionRun:
     def __init__(self, runtime: Runtime) -> None:
         self._runtime = runtime
-        self._planner = CallPlanner(policy=runtime.policy)
+        self._planner = CallPlanner(
+            policy=runtime.policy, authorized_phones=runtime.authorized_phones
+        )
         self._writer = ScriptWriter(organisation=runtime.organisation)
         self._capture = PromiseCapture(policy=runtime.policy)
 
@@ -71,6 +94,8 @@ class CollectionRun:
         self._record_plan(summary, now)
         for target in plan.targets:
             self._process(target, book, summary, now)
+            if summary.aborted is not None:
+                break
         return summary
 
     def recover(self, book: AccountBook) -> RunSummary:
@@ -86,7 +111,9 @@ class CollectionRun:
             target = _rebuild_target(orphan, book)
             if target is None:
                 continue
-            self._collect(target, orphan["call_id"], summary, now)
+            self._collect(target, orphan["call_id"], summary, now, task=None)
+            if summary.aborted is not None:
+                break
         return summary
 
     def _record_plan(self, summary: RunSummary, now: datetime) -> None:
@@ -123,21 +150,37 @@ class CollectionRun:
             return
         self._append(EVENT_CALL_DISPATCHED, _dispatch_payload(target, call_id, summary.run_id), now)
         summary.calls_placed += 1
-        self._collect(target, call_id, summary, now)
+        self._collect(target, call_id, summary, now, task=request.task)
 
-    def _collect(self, target: CallTarget, call_id: str, summary: RunSummary, now: datetime) -> None:
+    def _collect(
+        self,
+        target: CallTarget,
+        call_id: str,
+        summary: RunSummary,
+        now: datetime,
+        *,
+        task: str | None,
+    ) -> None:
         try:
             placed = self._runtime.port.await_result(call_id)
         except CallPlacementError as exc:
             self._record_failure(target, exc, summary, now)
             return
-        result = self._capture.capture(placed, target, now)
+        binding = CallBinding(
+            call_id=call_id,
+            phone=target.customer.primary_phone or "",
+            metadata=_binding_metadata(target),
+            task=task,
+        )
+        result = self._capture.capture(placed, target, now, binding)
         self._record_call(target, placed, result, summary, now)
 
     def _record_failure(
         self, target: CallTarget, exc: CallPlacementError, summary: RunSummary, now: datetime
     ) -> None:
         summary.failures.append((target.invoice.id, exc.code))
+        if exc.is_ambiguous:
+            summary.aborted = exc.code
         self._append(
             EVENT_CALL_FAILED,
             {
@@ -146,7 +189,8 @@ class CollectionRun:
                 "customer_id": target.customer.id,
                 "cycle": target.cycle.value,
                 "code": exc.code,
-                "message": str(exc),
+                "message": redact_phone_like(str(exc)),
+                "ambiguous": exc.is_ambiguous,
             },
             now,
         )
@@ -157,25 +201,51 @@ class CollectionRun:
         schema = promise_result_schema()
         assert_supported(schema)
         attempt = keys_consumed(self._runtime.ledger, target.invoice.id, target.cycle)
-        phone = target.customer.primary_phone
-        if phone is None:
-            raise CallPlacementError("Planner produced a target without a phone.", code="invalid_phone")
+        phone = self._authorized_phone(target)
+        task = self._writer.write(target, now.date())
+        metadata = {"run_id": run_id, **_binding_metadata(target)}
         return CallRequest(
-            task=self._writer.write(target, now.date()),
+            task=task,
             phone=phone,
             region=target.customer.region,
             locale=target.customer.locale,
             result_schema=schema,
             idempotency_key=idempotency_key(
-                invoice_id=target.invoice.id, cycle=target.cycle, attempt=attempt
+                invoice_id=target.invoice.id,
+                cycle=target.cycle,
+                attempt=attempt,
+                payload_digest=payload_digest(
+                    task=task,
+                    phone=phone,
+                    region=target.customer.region,
+                    locale=target.customer.locale,
+                    result_schema=schema,
+                    metadata=metadata,
+                ),
             ),
-            metadata={
-                "run_id": run_id,
-                "invoice_id": target.invoice.id,
-                "customer_id": target.customer.id,
-                "cycle": target.cycle.value,
-            },
+            metadata=metadata,
         )
+
+    def _authorized_phone(self, target: CallTarget) -> str:
+        """The last gate before a request exists, after the planner has had its say.
+
+        The planner already suppresses an unauthorized recipient, so reaching
+        here means a target was built some other way. It fails rather than
+        dialling a number nobody signed off on.
+        """
+        phone = target.customer.primary_phone
+        if phone is None or not is_e164(phone):
+            raise CallPlacementError(
+                "Planner produced a target without a dialable E.164 number.",
+                code="invalid_phone",
+            )
+        authorized = self._runtime.authorized_phones
+        if authorized is not None and phone not in authorized:
+            raise CallPlacementError(
+                f"{mask_phone(phone)} is not on the authorized recipient list.",
+                code="recipient_not_authorized",
+            )
+        return phone
 
     def _record_call(
         self,
@@ -269,6 +339,15 @@ def orphaned_calls(ledger: Ledger) -> list[dict]:
         for payload in ledger.of_type(EVENT_CALL_DISPATCHED)
         if payload["call_id"] not in collected
     ]
+
+
+def _binding_metadata(target: CallTarget) -> dict[str, str]:
+    """The identity a returned result must agree with before it means anything."""
+    return {
+        "invoice_id": target.invoice.id,
+        "customer_id": target.customer.id,
+        "cycle": target.cycle.value,
+    }
 
 
 def _dispatch_payload(target: CallTarget, call_id: str, run_id: str) -> dict:
