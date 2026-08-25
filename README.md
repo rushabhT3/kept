@@ -368,7 +368,7 @@ proves the key is good; a `401` proves it is not. Neither spends a call.
 pytest
 ```
 
-159 tests, no network, no credentials. They cover money parsing, allocation invariants
+160 tests, no network, no credentials. They cover money parsing, allocation invariants
 (no payment spent twice), every promise transition, every suppression reason, every capture
 rejection, ledger tamper detection, both live gates, crash recovery mid-poll, the
 `result_schema` pre-flight check, the spoken form of every identifier, and end-to-end runs
