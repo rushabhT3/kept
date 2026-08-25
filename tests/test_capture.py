@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from tests.conftest import at, make_customer, make_invoice
 
-from kept.calls.port import PlacedCall
+from kept.calls.port import PlacedCall, task_digest
 from kept.capture import CallBinding, CaptureVerdict, PromiseCapture, RejectionReason
 from kept.config import Policy
 from kept.models import CallCycle, CallTarget
@@ -36,7 +36,7 @@ def _target(outstanding_minor: int = 125_000) -> CallTarget:
 
 
 _CALL_ID = "call_sim_0001"
-_PHONE = "+15550100101"
+_PHONE = "+12025550101"
 _TASK = "Ask about INV-1001."
 _METADATA = {"invoice_id": "INV-1001", "customer_id": "CUS-01", "cycle": "first_contact"}
 
@@ -60,7 +60,7 @@ def binding(**overrides: Any) -> CallBinding:
         "call_id": _CALL_ID,
         "phone": _PHONE,
         "metadata": dict(_METADATA),
-        "task": _TASK,
+        "task_digest": task_digest(_TASK),
     }
     fields.update(overrides)
     return CallBinding(**fields)
@@ -98,7 +98,7 @@ def test_a_stated_dispute_stops_collection_and_records_the_reason(policy: Policy
         ({"outcome": "unclear"}, RejectionReason.NO_COMMITMENT),
         ({"right_party_reached": "no"}, RejectionReason.WRONG_PARTY),
         ({"right_party_reached": "unknown"}, RejectionReason.WRONG_PARTY),
-        ({"promised_amount": "a couple of thousand"}, RejectionReason.UNREADABLE_AMOUNT),
+        ({"promised_amount": "most of it"}, RejectionReason.UNREADABLE_AMOUNT),
         ({"promised_amount": "unknown"}, RejectionReason.UNREADABLE_AMOUNT),
         ({"promised_amount": None}, RejectionReason.UNREADABLE_AMOUNT),
         ({"promised_date": "next Friday"}, RejectionReason.UNREADABLE_DATE),

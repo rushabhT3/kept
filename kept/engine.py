@@ -18,6 +18,7 @@ from kept.calls.port import (
     PlacedCall,
     idempotency_key,
     payload_digest,
+    task_digest,
 )
 from kept.calls.schema import assert_supported, promise_result_schema
 from kept.calls.scripts import ScriptWriter
@@ -103,7 +104,9 @@ class CollectionRun:
 
         A run killed between dispatch and the terminal poll leaves a customer
         who was called and a ledger that does not know it. Their id is on disk,
-        so the outcome is fetched rather than the call being placed again.
+        so the outcome is fetched rather than the call being placed again. The
+        dispatch record's task digest binds that outcome to the instructions
+        actually sent; a record without one is closed out as `result_not_bound`.
         """
         now = self._runtime.clock.now()
         summary = RunSummary(run_id=f"recover_{now:%Y%m%dT%H%M%SZ}", plan=CallPlan())
@@ -111,7 +114,13 @@ class CollectionRun:
             target = _rebuild_target(orphan, book)
             if target is None:
                 continue
-            self._collect(target, orphan["call_id"], summary, now, task=None)
+            self._collect(
+                target,
+                orphan["call_id"],
+                summary,
+                now,
+                bound_task=str(orphan.get("task_digest", "")),
+            )
             if summary.aborted is not None:
                 break
         return summary
@@ -148,9 +157,14 @@ class CollectionRun:
         except CallPlacementError as exc:
             self._record_failure(target, exc, summary, now)
             return
-        self._append(EVENT_CALL_DISPATCHED, _dispatch_payload(target, call_id, summary.run_id), now)
+        digest = task_digest(request.task)
+        self._append(
+            EVENT_CALL_DISPATCHED,
+            _dispatch_payload(target, call_id, run_id=summary.run_id, bound_task=digest),
+            now,
+        )
         summary.calls_placed += 1
-        self._collect(target, call_id, summary, now, task=request.task)
+        self._collect(target, call_id, summary, now, bound_task=digest)
 
     def _collect(
         self,
@@ -159,7 +173,7 @@ class CollectionRun:
         summary: RunSummary,
         now: datetime,
         *,
-        task: str | None,
+        bound_task: str,
     ) -> None:
         try:
             placed = self._runtime.port.await_result(call_id)
@@ -170,7 +184,7 @@ class CollectionRun:
             call_id=call_id,
             phone=target.customer.primary_phone or "",
             metadata=_binding_metadata(target),
-            task=task,
+            task_digest=bound_task,
         )
         result = self._capture.capture(placed, target, now, binding)
         self._record_call(target, placed, result, summary, now)
@@ -350,10 +364,13 @@ def _binding_metadata(target: CallTarget) -> dict[str, str]:
     }
 
 
-def _dispatch_payload(target: CallTarget, call_id: str, run_id: str) -> dict:
+def _dispatch_payload(
+    target: CallTarget, call_id: str, *, run_id: str, bound_task: str
+) -> dict:
     return {
         "run_id": run_id,
         "call_id": call_id,
+        "task_digest": bound_task,
         "invoice_id": target.invoice.id,
         "customer_id": target.customer.id,
         "cycle": target.cycle.value,

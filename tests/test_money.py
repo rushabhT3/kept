@@ -22,7 +22,7 @@ def test_parses_written_and_spoken_amounts(text: str, expected_minor: int) -> No
 
 @pytest.mark.parametrize(
     "text",
-    ["", "   ", "a couple of thousand", "1,25,000.00", "-500", "1250.005", "next Friday"],
+    ["", "   ", "most of it", "1,25,000.00", "-500", "1250.005", "next Friday"],
 )
 def test_refuses_anything_it_cannot_read_exactly(text: str) -> None:
     with pytest.raises(AmountParseError):

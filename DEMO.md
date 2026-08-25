@@ -9,7 +9,7 @@ rm -rf demo && cp -r examples demo
 ```
 
 The dataset is eight overdue invoices for a fictional supplier, Northwind Supply Co. All
-phone numbers are in the reserved fictional `+1555…` range.
+phone numbers are in the NANP fictional `555-01XX` block (`+1 202 555 01XX`).
 
 ---
 
@@ -146,7 +146,7 @@ Three calls that a naive integration would have booked as promises:
 - *"Yeah, we'll get to it soon, don't worry about it."* — no amount, no date.
 - *"I'm not accounts, but I'm sure they'll pay it next week."* — wrong party. Confident, and
   worthless.
-- *"We'll send a couple of thousand across at the end of the week."* — an amount no parser
+- *"We'll clear most of it by the end of the week."* — an amount no parser
   should guess at.
 
 Zero records. Three named reasons. That is the whole safety posture: the model's fluency is

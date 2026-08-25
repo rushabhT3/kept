@@ -62,7 +62,7 @@ def _run(data_dir: Path, simulator: CalleSimulator, *, budget: int = 3, ledger: 
         ledger=ledger,
         clock=FrozenClock(RUN_MOMENT),
         policy=Policy(),
-        organisation=Organisation(name="Northwind Supply Co", callback_number="+15550199000"),
+        organisation=Organisation(name="Northwind Supply Co", callback_number="+12025550199"),
     )
     summary = CollectionRun(runtime).execute(load_book(data_dir, ledger), budget)
     port.close()
@@ -84,7 +84,7 @@ def test_the_installed_calle_sdk_sends_the_request(data_dir: Path) -> None:
     assert post.url.path == "/v1/calls"
     assert post.headers["Authorization"].startswith("Bearer ")
     assert post.headers["Idempotency-Key"].startswith("kept:INV-")
-    assert body["recipients"][0]["phones"][0].startswith("+1555")
+    assert body["recipients"][0]["phones"][0].startswith("+1202555")
     assert body["result_schema"]["additionalProperties"] is False
     assert all(
         isinstance(field["type"], str)
@@ -201,7 +201,7 @@ def _runtime(data_dir: Path, port, ledger: Ledger) -> Runtime:
         ledger=ledger,
         clock=FrozenClock(RUN_MOMENT),
         policy=Policy(),
-        organisation=Organisation(name="Northwind Supply Co", callback_number="+15550199000"),
+        organisation=Organisation(name="Northwind Supply Co", callback_number="+12025550199"),
     )
 
 
@@ -217,6 +217,7 @@ def test_a_call_is_written_to_the_ledger_before_its_outcome_is_known(data_dir: P
 
     dispatched = list(ledger.of_type(EVENT_CALL_DISPATCHED))
     assert [d["call_id"] for d in dispatched] == killed.dispatched
+    assert all(len(d["task_digest"]) == 16 for d in dispatched)
     assert list(ledger.of_type(EVENT_CALL_PLACED)) == []
     assert len(orphaned_calls(ledger)) == 1
 
@@ -292,39 +293,55 @@ def test_a_key_burned_before_the_cycle_was_recorded_still_counts(data_dir: Path)
     assert keys_consumed(ledger, "INV-1002", CallCycle.FIRST_CONTACT) == 1
 
 
+_NOBODY_HOME = {
+    "outcome": "no_answer",
+    "right_party_reached": "no",
+    "promise_made": "no",
+    "promised_amount": "unknown",
+    "promised_date": "unknown",
+    "payment_method": "unknown",
+    "dispute_raised": "no",
+    "dispute_reason": "unknown",
+    "evidence_quote": "Nobody picked up.",
+}
+
+
+def _answered(call_id: str, request: CallRequest) -> PlacedCall:
+    """A terminal call that echoes its request the way CALL-E does."""
+    return PlacedCall(
+        call_id=call_id,
+        status="completed",
+        task_completed=True,
+        confidence=0.9,
+        structured_result=dict(_NOBODY_HOME),
+        summary=None,
+        task=request.task,
+        metadata=dict(request.metadata),
+        phones=(request.phone,),
+    )
+
+
 class TimingOutPort:
     """A port whose second call never resolves, the way a dropped poll behaves."""
 
     def __init__(self, *, fail_on: int) -> None:
         self._fail_on = fail_on
+        self._requests: dict[str, CallRequest] = {}
         self.dispatched = 0
 
     def dispatch(self, request: CallRequest) -> str:
         self.dispatched += 1
         if self.dispatched == self._fail_on:
-            raise CallPlacementError("CALL-E API request timed out.", code="timeout")
-        return f"call_stub_{self.dispatched:04d}"
+            raise self._failure()
+        call_id = f"call_stub_{self.dispatched:04d}"
+        self._requests[call_id] = request
+        return call_id
 
     def await_result(self, call_id: str) -> PlacedCall:
-        return PlacedCall(
-            call_id=call_id,
-            status="completed",
-            task_completed=True,
-            confidence=0.9,
-            structured_result={
-                "outcome": "no_answer",
-                "right_party_reached": "no",
-                "promise_made": "no",
-                "promised_amount": "unknown",
-                "promised_date": "unknown",
-                "payment_method": "unknown",
-                "dispute_raised": "no",
-                "dispute_reason": "unknown",
-                "evidence_quote": "Nobody picked up.",
-            },
-            summary=None,
-            phones=("+15550100101",),
-        )
+        return _answered(call_id, self._requests[call_id])
+
+    def _failure(self) -> CallPlacementError:
+        return CallPlacementError("CALL-E API request timed out.", code="timeout")
 
     def close(self) -> None:
         return None
@@ -337,7 +354,7 @@ def _run_with(data_dir: Path, port: TimingOutPort, *, budget: int = 3):
         ledger=ledger,
         clock=FrozenClock(RUN_MOMENT),
         policy=Policy(),
-        organisation=Organisation(name="Northwind Supply Co", callback_number="+15550199000"),
+        organisation=Organisation(name="Northwind Supply Co", callback_number="+12025550199"),
     )
     return CollectionRun(runtime).execute(load_book(data_dir, ledger), budget)
 
@@ -356,11 +373,8 @@ def test_an_ambiguous_outcome_stops_the_run_where_it_stands(data_dir: Path) -> N
 
 def test_an_unambiguous_rejection_lets_the_rest_of_the_run_continue(data_dir: Path) -> None:
     class RejectingPort(TimingOutPort):
-        def dispatch(self, request: CallRequest) -> str:
-            self.dispatched += 1
-            if self.dispatched == self._fail_on:
-                raise CallPlacementError("Schema unsupported.", code="result_schema_invalid")
-            return f"call_stub_{self.dispatched:04d}"
+        def _failure(self) -> CallPlacementError:
+            return CallPlacementError("Schema unsupported.", code="result_schema_invalid")
 
     port = RejectingPort(fail_on=2)
 
@@ -369,3 +383,51 @@ def test_an_unambiguous_rejection_lets_the_rest_of_the_run_continue(data_dir: Pa
     assert summary.aborted is None
     assert port.dispatched == 3
     assert summary.calls_placed == 2
+
+
+class OrphanPort:
+    """Knows one call CALL-E finished that the ledger only shows as dialled."""
+
+    def __init__(self, placed: PlacedCall) -> None:
+        self._placed = placed
+
+    def dispatch(self, request: CallRequest) -> str:
+        raise AssertionError("recover must never dial")
+
+    def await_result(self, call_id: str) -> PlacedCall:
+        return self._placed
+
+
+def test_recover_refuses_an_orphan_whose_task_it_cannot_prove(data_dir: Path) -> None:
+    """A dispatch record with a stale task digest is closed out, not trusted."""
+    ledger = Ledger(data_dir / "ledger.jsonl")
+    ledger.append(
+        event_type=EVENT_CALL_DISPATCHED,
+        payload={
+            "run_id": "run_earlier",
+            "call_id": "call_stub_0001",
+            "task_digest": "0" * 16,
+            "invoice_id": "INV-1002",
+            "customer_id": "CUS-02",
+            "cycle": "first_contact",
+            "outstanding_minor": 480_000,
+            "phone": "***02",
+        },
+        at=RUN_MOMENT,
+    )
+    request = CallRequest(
+        task="Ask about INV-1002.",
+        phone="+12025550102",
+        region="US",
+        locale="en-US",
+        result_schema={},
+        idempotency_key="kept:INV-1002:first_contact:0:stale",
+        metadata={"invoice_id": "INV-1002", "customer_id": "CUS-02", "cycle": "first_contact"},
+    )
+    port = OrphanPort(_answered("call_stub_0001", request))
+
+    summary = CollectionRun(_runtime(data_dir, port, ledger)).recover(load_book(data_dir, ledger))
+
+    assert summary.rejections == [("INV-1002", "result_not_bound")]
+    assert summary.promises == []
+    assert orphaned_calls(ledger) == []

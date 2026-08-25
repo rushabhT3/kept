@@ -22,7 +22,7 @@ TODAY = date(2026, 8, 24)
     ],
 )
 def test_identifiers_are_rendered_the_way_a_person_reads_them(identifier: str, spoken: str) -> None:
-    """A raw id came back on a live call as 'invoice capitalized I'."""
+    """Text-to-speech narrates punctuation and casing in a raw identifier."""
     assert spoken_reference(identifier) == spoken
 
 
@@ -79,7 +79,7 @@ def test_the_final_notice_states_no_consequence_beyond_a_handover(organisation: 
 
 
 def test_the_call_language_is_named_so_it_cannot_drift(organisation: Organisation) -> None:
-    """A live en-IN call switched into Urdu to say it had not understood."""
+    """The region subtag alone does not hold the spoken language."""
     task = _write(_target(), organisation)
 
     assert "Speak English for the entire call" in task
@@ -87,7 +87,7 @@ def test_the_call_language_is_named_so_it_cannot_drift(organisation: Organisatio
 
 
 def test_a_vague_amount_may_not_be_accepted(organisation: Organisation) -> None:
-    """A live call took 'a couple of thousand' and moved straight to the date."""
+    """A vague quantity is not an amount and may not advance the call to the date."""
     task = _write(_target(), organisation)
 
     assert "Never accept a vague amount" in task
@@ -95,7 +95,7 @@ def test_a_vague_amount_may_not_be_accepted(organisation: Organisation) -> None:
 
 
 def test_the_agent_may_not_propose_values_the_customer_did_not_say(organisation: Organisation) -> None:
-    """A live call invented 'one thousand dollars on August 24th' and asked to confirm it."""
+    """A read-back may contain only values the customer actually stated."""
     task = _write(_target(), organisation)
 
     assert "Never propose an amount or a date the customer has not said" in task
@@ -103,7 +103,7 @@ def test_the_agent_may_not_propose_values_the_customer_did_not_say(organisation:
 
 
 def test_the_agent_is_told_it_knows_todays_date(organisation: Organisation) -> None:
-    """A live call answered 'I can't provide today's date' with the date in its prompt."""
+    """The date is in the prompt, so the agent may never claim not to have it."""
     task = _write(_target(), organisation)
 
     assert "Today is 2026-08-24" in task

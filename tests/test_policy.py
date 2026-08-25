@@ -104,7 +104,7 @@ def test_customer_asleep_in_their_own_timezone_is_not_dialled(policy: Policy) ->
 
 def test_budget_cuts_the_lowest_ranked_targets_and_says_so(policy: Policy) -> None:
     book = _book(
-        customers={"CUS-01": make_customer(), "CUS-02": make_customer("CUS-02", phones=("+15550100102",))},
+        customers={"CUS-01": make_customer(), "CUS-02": make_customer("CUS-02", phones=("+12025550102",))},
         invoices=[
             make_invoice("INV-SMALL", due="2026-08-01", amount_minor=10_000),
             make_invoice("INV-LARGE", customer_id="CUS-02", due="2026-08-01", amount_minor=90_000),
@@ -119,7 +119,7 @@ def test_budget_cuts_the_lowest_ranked_targets_and_says_so(policy: Policy) -> No
 
 def test_a_broken_promise_outranks_a_larger_untouched_invoice(policy: Policy) -> None:
     book = _book(
-        customers={"CUS-01": make_customer(), "CUS-02": make_customer("CUS-02", phones=("+15550100102",))},
+        customers={"CUS-01": make_customer(), "CUS-02": make_customer("CUS-02", phones=("+12025550102",))},
         invoices=[
             make_invoice("INV-BROKEN", due="2026-08-01", amount_minor=10_000),
             make_invoice("INV-BIG", customer_id="CUS-02", due="2026-08-01", amount_minor=90_000),

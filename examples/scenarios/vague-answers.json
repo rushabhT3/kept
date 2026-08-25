@@ -27,12 +27,12 @@
     "outcome": "promise_to_pay",
     "right_party_reached": "yes",
     "promise_made": "yes",
-    "promised_amount": "a couple of thousand",
+    "promised_amount": "most of it",
     "promised_date": "+6d",
     "payment_method": "bank_transfer",
     "dispute_raised": "no",
     "dispute_reason": "unknown",
-    "evidence_quote": "We'll send a couple of thousand across at the end of the week.",
+    "evidence_quote": "We'll clear most of it by the end of the week.",
     "confidence": 0.86
   }
 }

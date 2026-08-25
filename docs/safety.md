@@ -55,7 +55,7 @@ missing, empty or malformed file refuses the run outright. `--confirm PLACE-REAL
 authorises the run; this file authorises the destination, and adding a row to
 `customers.csv` is deliberately not enough to make a phone ring.
 
-Sample data uses the reserved fictional `+1555…` range only.
+Sample data uses the NANP fictional `555-01XX` block (`+1 202 555 01XX`) only.
 
 ## Masking
 
@@ -115,8 +115,11 @@ collected — without dialling anyone again.
 A structured result is only allowed to settle the invoice it was raised for. Before
 `kept/capture.py` reads a single field, the answer must agree with the request: the call
 id, the recipient CALL-E says it dialled, the task text, and the `invoice_id`,
-`customer_id` and `cycle` metadata. Any disagreement is `result_not_bound`, and so is a
-result that echoes back nothing checkable at all. A completed call whose `task_completed`
+`customer_id` and `cycle` metadata. CALL-E echoes all three on every call, so each is
+required: a result that omits any of them is `result_not_bound`, and so is any
+disagreement. The `call_dispatched` ledger record carries a digest of the task text, so a
+call recovered after a crash is bound to the same instructions rather than to whatever
+the ledger happens to remember. A completed call whose `task_completed`
 is not true is `call_not_completed`: the call ending and the job being done are two
 different facts and CALL-E reports them separately.
 

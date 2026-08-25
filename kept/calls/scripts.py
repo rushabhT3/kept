@@ -32,7 +32,7 @@ Hard rules for this call:
 - Never propose an amount or a date the customer has not said. Do not offer a figure to be
   confirmed, do not guess at what they meant, and do not read back a value they did not give
   you. Ask an open question and wait. A read-back may only contain values they stated.
-- Never accept a vague amount. "A couple of thousand", "most of it" and "the balance" are not
+- Never accept a vague amount. "Most of it", "a few thousand" and "the balance" are not
   amounts. Ask for the exact figure and do not move on to the date until you have one.
 - A date alone is not a commitment. Never end the call having agreed only a date; if you have
   a date but no exact amount, ask for the amount again before closing.
@@ -140,8 +140,9 @@ _LANGUAGE_NAMES = {
 def _language_name(locale: str) -> str:
     """Name the call language explicitly.
 
-    A live `en-IN` call drifted into Urdu mid-sentence to say it had not
-    understood. The region subtag alone was not enough to hold the language.
+    The region subtag alone does not hold the spoken language: a call can
+    drift into another one to say it did not understand. Naming it lets the
+    task forbid the switch.
     """
     return _LANGUAGE_NAMES.get(locale.split("-")[0].lower(), "English")
 
@@ -156,10 +157,10 @@ _DIGIT_WORDS = {
 def spoken_reference(identifier: str) -> str:
     """Render an identifier the way a person reads it down a phone.
 
-    A raw `INV-1001` came back on a live call as "invoice capitalized I", because
-    text-to-speech narrated the punctuation and the casing. Letters are spelled
-    out and digits are named individually, which is also how the recipient will
-    read it back off their own copy of the invoice.
+    Text-to-speech narrates the punctuation and the letter case in a raw
+    `INV-1001`, which the recipient cannot match to their copy. Letters are
+    spelled out and digits are named individually, which is also how they will
+    read it back off the invoice.
     """
     parts = [_speak_run(run) for run in _ID_RUN.findall(identifier)]
     return " ".join(part for part in parts if part)

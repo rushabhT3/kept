@@ -113,7 +113,7 @@ def test_report_never_prints_a_phone_number(data_dir: Path, tmp_path: Path) -> N
     report = tmp_path / "report.html"
     main(["report", "--data", str(data_dir), "--as-of", "2026-09-02T17:00:00Z", "--html", str(report)])
 
-    assert "+1555" not in report.read_text(encoding="utf-8")
+    assert "+12025" not in report.read_text(encoding="utf-8")
 
 
 def test_verify_reports_the_chain_length(data_dir: Path, capsys) -> None:

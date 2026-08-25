@@ -135,13 +135,13 @@ record**. Every condition below is checked locally, in `kept/capture.py`, after 
 
 | Rejection | What triggers it |
 | --- | --- |
-| `result_not_bound` | The result does not echo back the call id, recipient, task or metadata that was sent |
+| `result_not_bound` | The result omits, or disagrees with, the call id, recipient, task or metadata that was sent |
 | `call_not_completed` | Status is not `completed`, or CALL-E reports `task_completed` as anything but true |
 | `missing_structured_result` | Call completed with no structured result |
 | `malformed_result` | A required field is absent or off-vocabulary |
 | `wrong_party` | `right_party_reached` is not `yes` — a colleague taking a message is neither a commitment nor a dispute |
 | `no_commitment` | No amount **and** date were stated and read back |
-| `unreadable_amount` | `"a couple of thousand"`, `"1,25,000"` — anything not exactly parseable |
+| `unreadable_amount` | `"most of it"`, `"1,25,000"` — anything not exactly parseable |
 | `unreadable_date` | `"next Friday"` survived unresolved |
 | `date_in_past` | The agreed date has already gone |
 | `date_beyond_horizon` | Further out than `max_promise_horizon_days` |
@@ -241,7 +241,9 @@ enforced in code, not documentation.
 
 - A result is bound to the call that produced it before it means anything: the call id,
   the recipient, the task and the `invoice_id` / `customer_id` / `cycle` metadata must all
-  agree with what was sent, and a result that echoes none of them back is refused.
+  be present and agree with what was sent; a result that omits any of them is refused.
+  The `call_dispatched` record carries a digest of the task, so a call recovered after a
+  crash is held to the same proof.
 - Phone numbers are masked to their last two digits everywhere they are persisted or
   displayed, including inside provider-derived text — an evidence quote or a failure
   message that contains a number is masked before it is written. The HTML report contains
@@ -292,7 +294,7 @@ covers the task, recipient, region, locale and schema, so a reused key can only 
 a call placed with exactly the instructions being asked for now; `run_id` is excluded from
 it because a key that changed every run would stop deduplicating the crash it exists for.
 
-Use numbers you own. The bundled samples use the reserved fictional `+1555…` range.
+Use numbers you own. The bundled samples use the NANP fictional `555-01XX` block (`+1 202 555 01XX`).
 
 ---
 
@@ -366,7 +368,7 @@ proves the key is good; a `401` proves it is not. Neither spends a call.
 pytest
 ```
 
-155 tests, no network, no credentials. They cover money parsing, allocation invariants
+159 tests, no network, no credentials. They cover money parsing, allocation invariants
 (no payment spent twice), every promise transition, every suppression reason, every capture
 rejection, ledger tamper detection, both live gates, crash recovery mid-poll, the
 `result_schema` pre-flight check, the spoken form of every identifier, and end-to-end runs

@@ -125,3 +125,12 @@ def payload_digest(
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def task_digest(task: str) -> str:
+    """Short hash of the instructions a call was given.
+
+    The ledger records this rather than the text, so a result recovered after
+    a crash can still be proved to answer the task that was actually sent.
+    """
+    return hashlib.sha256(task.encode("utf-8")).hexdigest()[:16]

@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any
 
-from kept.calls.port import PlacedCall
+from kept.calls.port import PlacedCall, task_digest
 from kept.calls.schema import NOT_STATED
 from kept.config import Policy
 from kept.models import CallOutcome, CallTarget, Dispute, Promise, SpokenAnswer, redact_phone_like
@@ -26,15 +26,15 @@ from kept.money import AmountParseError, parse_amount_to_minor
 class CallBinding:
     """What CALL-E was asked to do, so its answer can be proved to be that call's.
 
-    `task` is optional because a recovered call is rebuilt from the ledger, which
-    stores who was dialled but not the words they heard. Everything present is
-    checked; nothing absent is assumed to match.
+    The task is held as a digest because that is what the ledger records, and a
+    recovered call is rebuilt from the ledger. Every field is required of the
+    result; nothing absent is assumed to match.
     """
 
     call_id: str
     phone: str
     metadata: dict[str, str]
-    task: str | None = None
+    task_digest: str
 
 
 class CaptureVerdict(str, Enum):
@@ -173,22 +173,19 @@ def _binding_mismatch(placed: PlacedCall, binding: CallBinding) -> str | None:
     """Name the first thing about this result that is not the call we placed.
 
     A structured result is only allowed to settle the invoice it was raised for.
-    Every field CALL-E echoes back is checked against what was sent, and a
-    result that echoes nothing checkable is refused rather than trusted: the
-    recipient list is the provider's own required field, so its absence means
-    the answer cannot be tied to a destination at all.
+    CALL-E echoes the task, the recipients and the metadata on every call, so
+    each is required here and compared with what was sent. A result that omits
+    any of them is refused rather than trusted.
     """
     if placed.call_id != binding.call_id:
         return "call_id"
-    if binding.task is not None and placed.task and placed.task != binding.task:
+    if not placed.task or task_digest(placed.task) != binding.task_digest:
         return "task"
-    if placed.phones and binding.phone not in placed.phones:
+    if binding.phone not in placed.phones:
         return "recipient"
     for key, expected in binding.metadata.items():
-        if key in placed.metadata and placed.metadata[key] != expected:
+        if placed.metadata.get(key) != expected:
             return f"metadata.{key}"
-    if not placed.phones and not placed.metadata:
-        return "unbindable"
     return None
 
 

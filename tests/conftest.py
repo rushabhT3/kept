@@ -15,7 +15,7 @@ def policy() -> Policy:
 
 @pytest.fixture
 def organisation() -> Organisation:
-    return Organisation(name="Northwind Supply Co", callback_number="+15550199000")
+    return Organisation(name="Northwind Supply Co", callback_number="+12025550199")
 
 
 def at(day: str, hour: int = 17) -> datetime:
@@ -27,7 +27,7 @@ def at(day: str, hour: int = 17) -> datetime:
 def make_customer(
     customer_id: str = "CUS-01",
     *,
-    phones: tuple[str, ...] = ("+15550100101",),
+    phones: tuple[str, ...] = ("+12025550101",),
     timezone_name: str = "America/New_York",
     locale: str = "en-US",
     do_not_call: bool = False,

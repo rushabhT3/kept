@@ -18,6 +18,7 @@ from kept.calls.port import (
     PlacedCall,
     idempotency_key,
     payload_digest,
+    task_digest,
 )
 from kept.capture import CallBinding, CaptureVerdict, PromiseCapture, RejectionReason
 from kept.config import (
@@ -39,7 +40,7 @@ NOW = at("2026-08-24")
 
 @pytest.mark.parametrize(
     "phone",
-    ["+15550100101", "+442071838750", "+919999999999"],
+    ["+12025550101", "+442079460123", "+447700900123"],
 )
 def test_full_international_numbers_are_accepted(phone: str) -> None:
     assert is_e164(phone) is True
@@ -48,13 +49,13 @@ def test_full_international_numbers_are_accepted(phone: str) -> None:
 @pytest.mark.parametrize(
     "phone",
     [
-        "+1 555 010 0101",
-        "+1-555-010-0101",
-        "5550100101",
+        "+1 202 555 0101",
+        "+1-202-555-0101",
+        "2025550101",
         "+0155010101",
-        "+1555",
-        "+15550100101x22",
-        "+155501001011234567",
+        "+1202",
+        "+12025550101x22",
+        "+120255501011234567",
         "",
     ],
 )
@@ -66,7 +67,7 @@ def test_a_leading_plus_is_not_enough_to_be_dialable(phone: str) -> None:
 
 def test_the_creditor_callback_number_is_held_to_the_same_standard() -> None:
     with pytest.raises(ValueError, match="E.164"):
-        Organisation(name="Northgate Supply", callback_number="+1 555 019 9000")
+        Organisation(name="Northgate Supply", callback_number="+1 202 555 0199")
 
 
 def test_a_production_key_is_only_ever_sent_to_the_official_api() -> None:
@@ -95,7 +96,7 @@ def test_an_authorization_file_of_comments_authorises_nobody(tmp_path) -> None:
 
 
 def test_authorization_must_name_an_exact_dialable_number(tmp_path) -> None:
-    (tmp_path / "authorized_recipients.txt").write_text("+1 555 010 0101\n", encoding="utf-8")
+    (tmp_path / "authorized_recipients.txt").write_text("+1 202 555 0101\n", encoding="utf-8")
 
     with pytest.raises(UnauthorizedRecipientsError, match="not E.164"):
         load_authorized_recipients(tmp_path)
@@ -103,10 +104,10 @@ def test_authorization_must_name_an_exact_dialable_number(tmp_path) -> None:
 
 def test_comments_and_blank_lines_are_stripped_from_the_allow_list(tmp_path) -> None:
     (tmp_path / "authorized_recipients.txt").write_text(
-        "# the operator's own phone\n+15550100101  # opted in\n\n", encoding="utf-8"
+        "# the operator's own phone\n+12025550101  # opted in\n\n", encoding="utf-8"
     )
 
-    assert load_authorized_recipients(tmp_path) == frozenset({"+15550100101"})
+    assert load_authorized_recipients(tmp_path) == frozenset({"+12025550101"})
 
 
 def _book(customer: Customer) -> AccountBook:
@@ -115,8 +116,8 @@ def _book(customer: Customer) -> AccountBook:
 
 
 def test_an_unauthorized_number_is_suppressed_by_name(policy: Policy) -> None:
-    customer = make_customer(phones=("+15550100101",))
-    planner = CallPlanner(policy=policy, authorized_phones=frozenset({"+15550100999"}))
+    customer = make_customer(phones=("+12025550101",))
+    planner = CallPlanner(policy=policy, authorized_phones=frozenset({"+12025550150"}))
 
     plan = planner.plan(_book(customer), NOW, budget=5)
 
@@ -125,8 +126,8 @@ def test_an_unauthorized_number_is_suppressed_by_name(policy: Policy) -> None:
 
 
 def test_the_same_number_on_the_allow_list_is_callable(policy: Policy) -> None:
-    customer = make_customer(phones=("+15550100101",))
-    planner = CallPlanner(policy=policy, authorized_phones=frozenset({"+15550100101"}))
+    customer = make_customer(phones=("+12025550101",))
+    planner = CallPlanner(policy=policy, authorized_phones=frozenset({"+12025550101"}))
 
     plan = planner.plan(_book(customer), NOW, budget=5)
 
@@ -134,8 +135,8 @@ def test_the_same_number_on_the_allow_list_is_callable(policy: Policy) -> None:
 
 
 def test_do_not_call_still_outranks_an_authorised_number(policy: Policy) -> None:
-    customer = make_customer(phones=("+15550100101",), do_not_call=True)
-    planner = CallPlanner(policy=policy, authorized_phones=frozenset({"+15550100101"}))
+    customer = make_customer(phones=("+12025550101",), do_not_call=True)
+    planner = CallPlanner(policy=policy, authorized_phones=frozenset({"+12025550101"}))
 
     plan = planner.plan(_book(customer), NOW, budget=5)
 
@@ -156,16 +157,17 @@ def _capture(policy: Policy, placed: PlacedCall, bound: CallBinding):
     return PromiseCapture(policy=policy).capture(placed, _target(), NOW, bound)
 
 
-def _unbound(answer: dict) -> PlacedCall:
-    """A terminal call that echoes back neither a recipient nor our metadata."""
-    return PlacedCall(
-        call_id="call_sim_0001",
-        status="completed",
-        task_completed=True,
-        confidence=0.9,
-        structured_result=answer,
-        summary=None,
-    )
+_OMISSIONS = {
+    "task": {"task": ""},
+    "recipients": {"phones": ()},
+    "metadata": {"metadata": {}},
+    "one metadata key": {"metadata": {"invoice_id": "INV-1001", "cycle": "first_contact"}},
+}
+
+
+def _omitting(fields: dict) -> PlacedCall:
+    """A terminal call that fails to echo something CALL-E always echoes."""
+    return replace(_placed(dict(_GOOD_ANSWER)), **fields)
 
 
 def _unfinished(answer: dict) -> PlacedCall:
@@ -189,20 +191,23 @@ def test_a_result_for_another_invoice_records_nothing(policy: Policy) -> None:
 
 
 def test_a_result_from_a_different_recipient_records_nothing(policy: Policy) -> None:
-    result = _capture(policy, _placed(dict(_GOOD_ANSWER)), binding(phone="+15550100999"))
+    result = _capture(policy, _placed(dict(_GOOD_ANSWER)), binding(phone="+12025550150"))
 
     assert result.rejection is RejectionReason.RESULT_NOT_BOUND
 
 
 def test_a_result_for_a_different_task_records_nothing(policy: Policy) -> None:
-    result = _capture(policy, _placed(dict(_GOOD_ANSWER)), binding(task="Ask about something else."))
+    other = task_digest("Ask about something else.")
+
+    result = _capture(policy, _placed(dict(_GOOD_ANSWER)), binding(task_digest=other))
 
     assert result.rejection is RejectionReason.RESULT_NOT_BOUND
 
 
-def test_a_result_that_names_no_recipient_or_metadata_is_not_trusted(policy: Policy) -> None:
-    """An answer that echoes nothing back cannot be tied to a destination."""
-    result = _capture(policy, _unbound(dict(_GOOD_ANSWER)), binding(task=None))
+@pytest.mark.parametrize("omission", list(_OMISSIONS.values()), ids=list(_OMISSIONS))
+def test_a_result_that_omits_what_was_sent_is_not_trusted(policy: Policy, omission: dict) -> None:
+    """The echo is required, not optional; nothing absent is assumed to match."""
+    result = _capture(policy, _omitting(omission), binding())
 
     assert result.rejection is RejectionReason.RESULT_NOT_BOUND
 
@@ -224,13 +229,13 @@ def test_a_dispute_from_the_wrong_person_is_not_a_dispute(policy: Policy) -> Non
 
 
 def test_a_phone_number_spoken_on_the_call_never_reaches_the_record(policy: Policy) -> None:
-    answer = {**_GOOD_ANSWER, "evidence_quote": "Call our AP desk on +1 555 010 0199 to confirm."}
+    answer = {**_GOOD_ANSWER, "evidence_quote": "Call our AP desk on +1 202 555 0177 to confirm."}
 
     result = _capture(policy, _placed(answer), binding())
 
     assert result.promise is not None
     assert "555" not in result.promise.evidence
-    assert "***99" in result.promise.evidence
+    assert "***77" in result.promise.evidence
 
 
 def test_amounts_and_dates_survive_redaction_untouched() -> None:
@@ -241,7 +246,7 @@ def test_amounts_and_dates_survive_redaction_untouched() -> None:
 
 def test_a_changed_payload_cannot_reuse_a_spent_idempotency_key() -> None:
     common = {
-        "phone": "+15550100101",
+        "phone": "+12025550101",
         "region": "US",
         "locale": "en-US",
         "result_schema": {"type": "object"},
@@ -261,7 +266,7 @@ def test_a_changed_payload_cannot_reuse_a_spent_idempotency_key() -> None:
 def test_the_run_id_is_left_out_so_a_crashed_run_still_deduplicates() -> None:
     common = {
         "task": "Ask about INV-1001.",
-        "phone": "+15550100101",
+        "phone": "+12025550101",
         "region": "US",
         "locale": "en-US",
         "result_schema": {"type": "object"},
